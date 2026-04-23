@@ -1,0 +1,24 @@
+gha-creds-*.json
+/site
+.vscode
+.DS_Store
+
+# training
+outputs/
+/*.ipynb
+eval_logs/
+# Added 2026-04-23: exclude heavy runtime artifacts so git init is sane
+datasets/
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+appdata/
+logs/
+*.hdf5
+*.mp4
+*.parquet
+*.npy
+*.npz
+.ipynb_checkpoints/
