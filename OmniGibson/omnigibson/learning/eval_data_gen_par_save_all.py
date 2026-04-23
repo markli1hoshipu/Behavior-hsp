@@ -37,7 +37,7 @@ from inspect import getsourcefile
 from omegaconf import DictConfig, OmegaConf
 import h5py
 from omnigibson.envs.env_wrapper import EnvironmentWrapper
-from omnigibson.envs.data_wrapper import DataCollectionWrapper
+from omnigibson.envs.data_wrapper import HDF5CollectionWrapper
 from omnigibson.learning.utils.config_utils import register_omegaconf_resolvers
 from omnigibson.learning.utils.dataset_utils import makedirs_with_mode
 from omnigibson.learning.utils.eval_utils import (
@@ -64,9 +64,9 @@ from pathlib import Path
 from signal import signal, SIGINT
 from typing import Any, Tuple, List, Dict, Optional
 
-class PolicyEvalDataCollectionWrapper(DataCollectionWrapper):
+class PolicyEvalDataCollectionWrapper(HDF5CollectionWrapper):
     """
-    A modified DataCollectionWrapper that does NOT disable camera render products.
+    A modified HDF5CollectionWrapper that does NOT disable camera render products.
     This allows the policy to receive correct observations during evaluation
     while still recording state dumps for replay compatibility.
     """

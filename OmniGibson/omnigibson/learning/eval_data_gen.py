@@ -23,12 +23,12 @@ from hydra.utils import instantiate
 from inspect import getsourcefile
 from omegaconf import DictConfig, OmegaConf
 from omnigibson.envs.env_wrapper import EnvironmentWrapper
-from omnigibson.envs.data_wrapper import DataCollectionWrapper
+from omnigibson.envs.data_wrapper import HDF5CollectionWrapper
 
 
-class PolicyEvalDataCollectionWrapper(DataCollectionWrapper):
+class PolicyEvalDataCollectionWrapper(HDF5CollectionWrapper):
     """
-    A modified DataCollectionWrapper that does NOT disable camera render products.
+    A modified HDF5CollectionWrapper that does NOT disable camera render products.
     This allows the policy to receive correct observations during evaluation
     while still recording state dumps for replay compatibility.
     """
@@ -39,7 +39,7 @@ class PolicyEvalDataCollectionWrapper(DataCollectionWrapper):
         We skip the sensor disabling so observations remain valid for policy evaluation.
         """
         # NOTE: We intentionally do NOT disable render products here
-        # The original DataCollectionWrapper disables them for speed, but that breaks
+        # The original HDF5CollectionWrapper disables them for speed, but that breaks
         # observation-based policies.
 
         # Set the main viewport camera path (keep this from original)
