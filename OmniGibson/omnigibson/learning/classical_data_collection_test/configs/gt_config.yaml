@@ -1,0 +1,47 @@
+# Ground-Truth Data Generation Config
+# This config is used with eval_data_gen_gt.py which uses GroundTruthTaskExecutor
+# instead of ML policies for data generation.
+
+defaults:
+  - _self_
+
+# Robot config (inline since we can't reference parent configs easily)
+robot:
+  type: R1Pro
+  controllers: null
+
+# Task config
+task:
+  name: setting_up_candles  # Default task, override with task.name=<task_name>
+
+# No policy needed - we use GroundTruthTaskExecutor
+# model is not used but kept for compatibility
+model: null
+policy_name: ground_truth
+
+# Environment wrapper
+env_wrapper:
+  _target_: omnigibson.learning.wrappers.RGBLowResWrapper
+
+# Execution settings
+headless: true  # Whether to run in headless mode (no GUI)
+eval_on_train_instances: true  # Eval on training instances for data generation
+eval_instance_ids: null  # Specific list of instance ids to eval on, if null test on all instances
+write_video: true  # Whether we record videos during rollout
+partial_scene_load: false  # Whether to only load task-relevant rooms for a specific task
+max_steps: null  # Max steps per rollout episode
+
+# Output paths
+log_path: /home/user/BEHAVIOR-1K/eval_logs/gt_data_gen
+output_folder: /home/user/BEHAVIOR-1K/gt_generated_data
+recording_path: null
+
+# Recording options
+record_rgb: true
+record_depth: true
+only_successes: true  # Only save successful episodes
+
+# Testing options
+test_hidden: false
+traj_path: null
+instance_id: 0

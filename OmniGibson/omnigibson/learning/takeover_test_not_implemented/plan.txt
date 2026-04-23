@@ -1,0 +1,414 @@
+# Plan: Interactive Replay-to-Failure + Controller Takeover + Continue Recording
+
+## Goal
+Create a system that:
+1. **Interactively replays** HDF5 data while user watches the simulation
+2. User presses a key when they see a failure to **trigger takeover mode**
+3. Another controller (policy or joylo) takes over from that exact point
+4. Records the **complete trajectory** (pre-failure from HDF5 + post-takeover new data) to a new HDF5 file
+
+---
+
+## Parquet vs HDF5 Analysis
+
+**Can parquet+video achieve the same result?** **NO**
+
+| Capability | HDF5 | Parquet+Video |
+|------------|------|---------------|
+| Serialized sim state | YES (`og.sim.dump_state()`) | NO |
+| Restore to arbitrary step | YES (`og.sim.load_state()`) | NO |
+| Object positions/physics | YES | NO |
+| Scene configuration | YES | NO |
+
+**Parquet stores only:**
+- Proprioception (joint positions/velocities)
+- Camera relative poses
+- Actions
+- Task metadata
+
+**Missing for takeover:** Full object states, scene configuration, physics state
+
+**Conclusion:** Must use HDF5 for replay-to-takeover. Parquet is only suitable for final output after successful recording.
+
+---
+
+## Key Insights
+
+### HDF5 Structure
+```
+demo_0/
+  state[T, max_state_size]     # Serialized simulator states
+  state_size[T]                 # Actual size of each state
+  action[T-1, action_dim]       # Actions (T-1 entries)
+  transitions                   # Object/system add/remove events
+  init_metadata/                # Object attributes at start
+```
+
+### Direct State Loading
+```python
+og.sim.load_state(state[N, :int(state_size[N])], serialized=True)
+```
+Restores simulator to exact state at step N - no need to replay physics.
+
+### Joylo Hardware Sync
+```python
+# In gello_agent.py
+agent.set_reset_qpos(target_qpos)  # Set target
+agent.reset()                       # Move hardware to target
+```
+
+---
+
+## Architecture Overview
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    Interactive Replay Mode                       │
+│  ┌─────────────┐                                                │
+│  │   HDF5      │──► Load state[i] ──► Render ──► User watches   │
+│  │   Input     │      at each step              simulation      │
+│  └─────────────┘                                                │
+│                                     │                           │
+│                              User presses key                   │
+│                                     ▼                           │
+│  ┌─────────────────────────────────────────────────────────┐   │
+│  │                   TAKEOVER TRIGGERED                     │   │
+│  │  1. Stop replay at step N                               │   │
+│  │  2. Copy states[0:N+1], actions[0:N] to new trajectory  │   │
+│  │  3. Sync joylo hardware to sim robot state (if needed)  │   │
+│  │  4. Switch to live control mode                         │   │
+│  └─────────────────────────────────────────────────────────┘   │
+│                                     │                           │
+│                                     ▼                           │
+│  ┌─────────────────────────────────────────────────────────┐   │
+│  │                   Live Control Mode                      │   │
+│  │  Policy OR Joylo teleoperation                          │   │
+│  │  Recording continues to new HDF5                        │   │
+│  └─────────────────────────────────────────────────────────┘   │
+│                                     │                           │
+│                                     ▼                           │
+│  ┌─────────────┐                                                │
+│  │   HDF5      │◄── Complete trajectory saved                   │
+│  │   Output    │    (replay portion + takeover portion)         │
+│  └─────────────┘                                                │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Implementation Plan
+
+### Phase 1: Create InteractiveReplayTakeoverWrapper Class
+
+**File:** `OmniGibson/omnigibson/envs/data_wrapper.py`
+
+```python
+class InteractiveReplayTakeoverWrapper(DataCollectionWrapper):
+    """
+    Wrapper that:
+    1. Replays HDF5 interactively (user watches simulation)
+    2. Listens for keyboard interrupt to trigger takeover
+    3. Copies pre-takeover data to new trajectory
+    4. Continues recording post-takeover data
+    """
+
+    def __init__(self, env, output_path, input_path, only_successes=False, **kwargs):
+        self.input_hdf5 = h5py.File(input_path, "r")
+        self.takeover_step = None
+        self.in_takeover_mode = False
+        super().__init__(env=env, output_path=output_path,
+                        only_successes=only_successes, **kwargs)
+
+    def interactive_replay(self, episode_id: int, n_render_iterations: int = 3) -> int:
+        """
+        Replay episode interactively. User presses 't' to trigger takeover.
+        Returns the step number where takeover was triggered (-1 if completed).
+        """
+        pass
+
+    def prepare_takeover(self, episode_id: int, takeover_step: int):
+        """
+        After takeover triggered:
+        1. Copy states[0:takeover_step+1] and actions[0:takeover_step] to current_traj_history
+        2. Simulator is already at correct state from replay
+        3. Set flag for live control mode
+        """
+        pass
+
+    def get_robot_joint_state_for_gello(self) -> np.ndarray:
+        """
+        Get robot joint positions in gello-compatible format for hardware sync.
+        """
+        pass
+```
+
+### Phase 2: Create Main Takeover Script
+
+**File:** `OmniGibson/omnigibson/learning/interactive_takeover.py`
+
+```python
+"""
+Interactive replay-to-failure + takeover script.
+
+Usage:
+    # Policy takeover
+    python interactive_takeover.py \
+        --input_hdf5 /path/to/failed.hdf5 \
+        --output_hdf5 /path/to/corrected.hdf5 \
+        --task_name picking_up_trash \
+        --controller policy \
+        --policy_config /path/to/policy.yaml
+
+    # Joylo takeover (starts ZMQ server, user runs run_joylo.py separately)
+    python interactive_takeover.py \
+        --input_hdf5 /path/to/failed.hdf5 \
+        --output_hdf5 /path/to/corrected.hdf5 \
+        --task_name picking_up_trash \
+        --controller joylo \
+        --robot_port 6001
+"""
+
+def main():
+    # 1. Parse arguments
+
+    # 2. Setup environment (similar to eval_data_gen.py)
+
+    # 3. Wrap with InteractiveReplayTakeoverWrapper
+
+    # 4. Interactive replay phase
+    print("Replaying... Press 't' to trigger takeover at any point")
+    takeover_step = wrapper.interactive_replay(episode_id=args.episode_id)
+
+    if takeover_step == -1:
+        print("Replay completed without takeover")
+        return
+
+    # 5. Prepare takeover (copy pre-takeover data)
+    wrapper.prepare_takeover(episode_id=args.episode_id, takeover_step=takeover_step)
+    obs = wrapper.env._get_obs()
+
+    # 6. Controller takeover
+    if args.controller == "policy":
+        # Load and run policy
+        policy = load_policy(args.policy_config)
+        run_policy_loop(wrapper, policy, obs)
+
+    elif args.controller == "joylo":
+        # Get robot state for joylo sync
+        robot_joints = wrapper.get_robot_joint_state_for_gello()
+        print(f"Robot joint state for joylo sync: {robot_joints}")
+
+        # Start ZMQ server for joylo connection
+        # User runs run_joylo.py --sync_pose in another terminal
+        run_joylo_server_loop(wrapper, robot_port=args.robot_port)
+
+    # 7. Save data
+    wrapper.save_data()
+```
+
+### Phase 3: Implement Interactive Replay Loop
+
+**Key implementation in InteractiveReplayTakeoverWrapper:**
+
+```python
+def interactive_replay(self, episode_id: int, n_render_iterations: int = 3) -> int:
+    """Returns takeover step, or -1 if replay completed."""
+    import sys
+    import select
+
+    traj_grp = self.input_hdf5["data"][f"demo_{episode_id}"]
+    transitions = json.loads(traj_grp.attrs["transitions"])
+    state = th.from_numpy(traj_grp["state"][:])
+    state_size = th.from_numpy(traj_grp["state_size"][:])
+    action = th.from_numpy(traj_grp["action"][:])
+    init_metadata = {k: th.from_numpy(v[:]) for k, v in traj_grp["init_metadata"].items()}
+
+    # Restore scene
+    scene_file = json.loads(self.input_hdf5["data"].attrs["scene_file"])
+    self.scene.restore(scene_file, update_initial_file=True)
+
+    # Restore init_metadata
+    with og.sim.stopped():
+        for i, obj in enumerate(self.scene.objects):
+            for attr, vals in init_metadata.items():
+                setattr(obj, attr, vals[i].item() if vals[i].ndim == 0 else vals[i])
+
+    # Load initial state
+    og.sim.load_state(state[0, :int(state_size[0])], serialized=True)
+    self.env.step(action[0], n_render_iterations=n_render_iterations)  # Render
+
+    print("Press 't' to trigger takeover, 'q' to quit...")
+
+    for i in range(len(action)):
+        # Check for keyboard input (non-blocking)
+        if self._check_takeover_key():
+            print(f"\nTakeover triggered at step {i}")
+            return i
+
+        # Apply transitions at this step
+        if str(i) in transitions:
+            self._apply_transitions(transitions[str(i)])
+            self.current_transitions[i] = transitions[str(i)]
+
+        # Load state and step (for rendering)
+        og.sim.load_state(state[i+1, :int(state_size[i+1])], serialized=True)
+        self.env.step(action[i], n_render_iterations=n_render_iterations)
+
+        if i % 100 == 0:
+            print(f"\rStep {i}/{len(action)}...", end="", flush=True)
+
+    print("\nReplay completed")
+    return -1
+
+def _check_takeover_key(self) -> bool:
+    """Non-blocking check for takeover key press."""
+    import sys
+    import select
+    import termios
+    import tty
+
+    # Check if input available
+    if select.select([sys.stdin], [], [], 0.0)[0]:
+        key = sys.stdin.read(1)
+        return key.lower() == 't'
+    return False
+```
+
+### Phase 4: Prepare Takeover (Copy Pre-Takeover Data)
+
+```python
+def prepare_takeover(self, episode_id: int, takeover_step: int):
+    """Copy replayed data to current trajectory for seamless recording."""
+    traj_grp = self.input_hdf5["data"][f"demo_{episode_id}"]
+    state = th.from_numpy(traj_grp["state"][:])
+    state_size = th.from_numpy(traj_grp["state_size"][:])
+    action = th.from_numpy(traj_grp["action"][:])
+
+    # Clear any existing trajectory data
+    self.current_traj_history = []
+    self.max_state_size = 0
+
+    # Copy initial state (no action)
+    self.current_traj_history.append({
+        "state": state[0, :int(state_size[0])],
+        "state_size": int(state_size[0]),
+    })
+    self.max_state_size = int(state_size[0])
+
+    # Copy steps 1 to takeover_step (with actions)
+    for i in range(takeover_step):
+        self.current_traj_history.append({
+            "action": action[i],
+            "state": state[i+1, :int(state_size[i+1])],
+            "state_size": int(state_size[i+1]),
+            "reward": 0.0,
+            "terminated": False,
+            "truncated": False,
+        })
+        self.max_state_size = max(self.max_state_size, int(state_size[i+1]))
+
+    self.takeover_step = takeover_step
+    self.in_takeover_mode = True
+    print(f"Prepared takeover: copied {takeover_step + 1} states, {takeover_step} actions")
+```
+
+### Phase 5: Joylo Hardware Sync
+
+**File:** `joylo/experiments/run_joylo.py` (modify)
+
+Add `--sync_to_sim` argument and sync logic:
+
+```python
+@dataclass
+class Args:
+    # ... existing args ...
+    sync_to_sim: bool = False  # Sync hardware to sim state before teleoperation
+
+def main(args):
+    # ... existing setup ...
+
+    if args.sync_to_sim:
+        print("Querying simulation for robot joint state...")
+        # Get target joint state from ZMQ server
+        obs = robot_client.get_obs()
+        sim_joint_state = obs["joint_positions"]
+
+        # Convert to gello joint space
+        gello_target = arm_agent._obs_joints_to_gello_joints(
+            {"joint_positions": sim_joint_state}
+        )
+
+        print(f"Moving hardware to target pose...")
+        arm_agent.set_reset_qpos(gello_target)
+        arm_agent.reset()
+
+        input("Hardware synced to simulation. Press Enter to start teleoperation...")
+
+    # ... rest of teleoperation loop ...
+```
+
+---
+
+## Critical Files to Modify
+
+| File | Changes |
+|------|---------|
+| `OmniGibson/omnigibson/envs/data_wrapper.py` | Add `InteractiveReplayTakeoverWrapper` class |
+| `OmniGibson/omnigibson/learning/interactive_takeover.py` | **New file** - main orchestration script |
+| `joylo/experiments/run_joylo.py` | Add `--sync_to_sim` for hardware sync |
+
+---
+
+## Usage Examples
+
+### Policy Takeover
+```bash
+python OmniGibson/omnigibson/learning/interactive_takeover.py \
+    --input_hdf5 ~/data/failed_rollout.hdf5 \
+    --output_hdf5 ~/data/corrected_rollout.hdf5 \
+    --task_name picking_up_trash \
+    --episode_id 0 \
+    --controller policy \
+    --policy_config ~/configs/better_policy.yaml
+```
+
+### Joylo Teleoperation Takeover
+```bash
+# Terminal 1: Start interactive replay
+python OmniGibson/omnigibson/learning/interactive_takeover.py \
+    --input_hdf5 ~/data/failed_rollout.hdf5 \
+    --output_hdf5 ~/data/corrected_rollout.hdf5 \
+    --task_name picking_up_trash \
+    --episode_id 0 \
+    --controller joylo \
+    --robot_port 6001
+
+# (Watch simulation, press 't' when you see failure)
+# Script prints: "Takeover at step 150. Robot joints: [...]"
+# Script starts ZMQ server, waiting for joylo connection
+
+# Terminal 2: Start joylo with hardware sync
+python joylo/experiments/run_joylo.py \
+    --sync_to_sim \
+    --gello_model r1pro
+```
+
+---
+
+## Verification Plan
+
+1. **Unit test interactive replay**: Verify state loading at each step matches original
+2. **Unit test keyboard detection**: Verify 't' key triggers takeover correctly
+3. **Unit test data copy**: Verify pre-takeover trajectory is correctly copied
+4. **Integration test**: Full workflow - replay, takeover, policy control, save
+5. **Hardware test**: Verify joylo syncs to sim state correctly
+6. **End-to-end test**: Replay output HDF5 to verify combined trajectory is valid
+
+---
+
+## User Requirements (Confirmed)
+
+1. **Failure detection**: Interactive - user watches replay and presses key
+2. **Takeover mode**: Single takeover per run
+3. **Partial data**: Save anyway - all data saved regardless of task success
+4. **Data format**: HDF5 required (parquet lacks state restoration capability)
